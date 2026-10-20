@@ -1,0 +1,69 @@
+@startuml
+!theme plain
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+
+title Architecture Plateforme Freelance E-MPGT
+
+package "Frontend" {
+  [Page Accueil] as Accueil
+  [Profils Disponibles] as Profils
+  [Fiche Freelance] as FicheFree
+  [Missions] as Missions
+  [Dashboard] as Dashboard
+  [Inscription] as Inscription
+}
+
+package "Backend - Next.js API" {
+  [Auth API] as Auth
+  [Profils API] as ProfilsAPI
+  [Missions API] as MissionsAPI
+  [Messagerie API] as MsgAPI
+  [Admin API] as AdminAPI
+}
+
+package "Base de Donnees" {
+  database "PostgreSQL" as DB {
+    [Users] as Users
+    [Freelances] as Freelances
+    [Entreprises] as Entreprises
+    [Missions] as MissionsTable
+    [Candidatures] as Candidatures
+    [Messages] as Messages
+  }
+}
+
+package "Services Externes" {
+  [Cloudinary - Storage] as Cloud
+  [Resend - Emails] as Email
+  [Stripe - Paiement] as Stripe
+}
+
+' Connexions Frontend -> Backend
+Accueil --> Auth
+Profils --> ProfilsAPI
+FicheFree --> ProfilsAPI
+Missions --> MissionsAPI
+Dashboard --> ProfilsAPI
+Dashboard --> MissionsAPI
+Inscription --> Auth
+
+' Connexions Backend -> Database
+Auth --> Users
+ProfilsAPI --> Freelances
+ProfilsAPI --> Entreprises
+MissionsAPI --> MissionsTable
+MissionsAPI --> Candidatures
+MsgAPI --> Messages
+AdminAPI --> Users
+AdminAPI --> Freelances
+AdminAPI --> Entreprises
+
+' Connexions Backend -> Services
+ProfilsAPI --> Cloud : Upload Photo
+Auth --> Email : Verification
+MissionsAPI --> Email : Notifications
+
+@enduml

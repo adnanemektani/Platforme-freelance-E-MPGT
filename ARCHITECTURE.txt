@@ -1,0 +1,56 @@
+ARCHITECTURE TECHNIQUE - Plateforme Freelance E-MPGT
+
+1. FRONTEND
+   - Framework : Next.js / React
+   - Styling : Tailwind CSS
+   - Deploiement : Vercel
+
+2. BACKEND / API
+   - Framework : Next.js API Routes
+   - Authentification : NextAuth.js
+   - Validation : Zod
+
+3. BASE DE DONNEES
+   - Engine : PostgreSQL
+   - ORM : Prisma
+   - Hebergement : Supabase / Neon
+
+4. SERVICES
+   - Stockage fichiers : Cloudinary / AWS S3
+   - Emails : Resend / SendGrid
+   - Paiement : Stripe (optionnel)
+
+5. ARCHITECTURE GLOBALE
+
+   [Client Browser]
+          |
+          v
+   [Frontend Next.js]
+          |
+          v
+   [API Routes Next.js]
+          |
+          v
+   [Prisma ORM]
+          |
+          v
+   [PostgreSQL Database]
+
+6. MODULES PRINCIPAUX
+
+   - Gestion des utilisateurs (freelances, entreprises, admin)
+   - Profils freelances (CV, competences, disponibilite)
+   - Missions (publication, candidature, suivi)
+   - Messagerie
+   - Devis et facturation
+   - Dashboard et statistiques
+
+7. SECURITE
+
+   - Authentification JWT / Session
+   - Protection des routes API
+   - Validation des donnees entrees
+   - Hashage des mots de passe (bcrypt)
+
+---
+Architecture validee - Pret pour le developpement

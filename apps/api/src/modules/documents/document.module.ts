@@ -1,0 +1,11 @@
+import { Global, Module } from '@nestjs/common';
+import { DocumentController } from './document.controller.js';
+import { DocumentService } from './document.service.js';
+
+@Global()
+@Module({
+  controllers: [DocumentController],
+  providers: [DocumentService],
+  exports: [DocumentService],
+})
+export class DocumentModule {}

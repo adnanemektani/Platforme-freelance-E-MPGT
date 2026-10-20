@@ -1,0 +1,20 @@
+packages:
+  - apps/*
+  - packages/*
+
+# pnpm 11 : seules les dépendances listées ici peuvent exécuter des scripts d'installation.
+allowBuilds:
+  argon2: true
+  prisma: true
+  "@prisma/engines": true
+  sharp: false
+  unrs-resolver: false
+  "@swc/core": false
+  esbuild: false
+  # Télémétrie d'installation (swagger-ui) : désactivée.
+  "@scarf/scarf": false
+
+# Versions exactes : les dépendances sont verrouillées par pnpm-lock.yaml.
+# Aucune exception au délai minimal de publication (minimumReleaseAge) : on choisit
+# des versions publiées depuis plusieurs jours.
+saveExact: true

@@ -1,0 +1,36 @@
+{
+  "name": "empgt-freelance-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plateforme Freelance E-MPGT : mise en relation B2B entre freelances du BTP et entreprises.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter @empgt/contracts build && pnpm -r --filter @empgt/api --filter @empgt/web build",
+    "build:contracts": "pnpm --filter @empgt/contracts build",
+    "dev": "pnpm build:contracts && concurrently -n contracts,api,web -c gray,blue,green \"pnpm --filter @empgt/contracts dev\" \"pnpm --filter @empgt/api dev\" \"pnpm --filter @empgt/web dev\"",
+    "typecheck": "pnpm build:contracts && pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm build:contracts && pnpm --filter @empgt/api test",
+    "test:e2e": "pnpm build:contracts && pnpm --filter @empgt/api test:e2e",
+    "db:migrate": "pnpm --filter @empgt/api db:migrate",
+    "db:deploy": "pnpm --filter @empgt/api db:deploy",
+    "db:seed:demo": "pnpm --filter @empgt/api db:seed:demo",
+    "admin:create": "pnpm --filter @empgt/api admin:create",
+    "infra:up": "docker compose -f docker/compose.dev.yml --env-file .env up -d",
+    "infra:down": "docker compose -f docker/compose.dev.yml --env-file .env down",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md,css}\"",
+    "test:all": "pnpm build:contracts && pnpm --filter @empgt/api test:all",
+    "test:ui": "playwright test",
+    "openapi:export": "pnpm --filter @empgt/api openapi:export"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "concurrently": "10.0.6",
+    "prettier": "3.9.10"
+  }
+}

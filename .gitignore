@@ -1,0 +1,32 @@
+# Dépendances et builds
+node_modules/
+dist/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Client Prisma généré
+apps/api/src/generated/
+
+# Environnement et secrets : ne jamais committer
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Données locales (instantanés d'import, sauvegardes, stockage)
+data/
+backups/
+apps/api/storage-local/
+
+# Outils
+.DS_Store
+Thumbs.db
+*.log
+playwright-report/
+test-results/
+.vscode/*
+!.vscode/extensions.json

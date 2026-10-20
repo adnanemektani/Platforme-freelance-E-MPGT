@@ -1,0 +1,61 @@
+# Infrastructure de DÉVELOPPEMENT pour `pnpm dev` (API et frontend lancés sur l'hôte).
+# Tous les ports sont liés à 127.0.0.1 : rien n'est exposé sur le réseau.
+#
+#   docker compose -f docker/compose.dev.yml --env-file .env up -d
+#
+name: empgt-freelance-dev
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-empgt_freelance}
+      POSTGRES_USER: ${POSTGRES_USER:-empgt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD est obligatoire}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5440}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  storage:
+    image: chrislusf/seaweedfs:4.48
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/empgt/start.sh"]
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?S3_ACCESS_KEY_ID est obligatoire}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?S3_SECRET_ACCESS_KEY est obligatoire}
+      S3_BUCKET: ${S3_BUCKET:-empgt-documents}
+    ports:
+      - "127.0.0.1:${S3_HOST_PORT:-8333}:8333"
+    volumes:
+      - ./seaweedfs/start.sh:/opt/empgt/start.sh:ro
+      - storagedata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz || wget -q -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    environment:
+      MP_MAX_MESSAGES: 2000
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgdata:
+  storagedata:

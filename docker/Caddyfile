@@ -1,0 +1,30 @@
+# Point d'entrée unique : /api → API NestJS, le reste → Next.js.
+# SITE_ADDRESS=":80" en local (HTTP) ; un nom de domaine en production active le HTTPS automatique.
+{
+	admin off
+}
+
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+
+	@api path /api/*
+	handle @api {
+		request_body {
+			max_size 20MB
+		}
+		reverse_proxy api:4000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

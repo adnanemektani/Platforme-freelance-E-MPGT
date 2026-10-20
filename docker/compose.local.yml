@@ -1,0 +1,35 @@
+# Surcharge pour un essai LOCAL de la pile complète (HTTP sur http://localhost:8080, e-mails captés par Mailpit sur http://localhost:8026).
+#
+#   docker compose -f docker/compose.yml -f docker/compose.local.yml --env-file .env up -d --build
+#
+# Jamais en production : cookies non sécurisés, documentation OpenAPI ouverte, boîte e-mail de test.
+x-local-env: &local-env
+  APP_ENV: staging
+  APP_ORIGIN: http://localhost:8080
+  COOKIE_SECURE: "false"
+  OPENAPI_ENABLED: "true"
+  MAIL_TRANSPORT: smtp
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  SMTP_SECURE: "false"
+
+services:
+  migrate:
+    environment: *local-env
+  api:
+    environment: *local-env
+    networks: [backend, frontend, mail]
+  caddy:
+    environment:
+      SITE_ADDRESS: ":80"
+    ports: !override
+      - "127.0.0.1:${HTTP_PORT:-8080}:80"
+  mailpit:
+    image: axllent/mailpit:v1.31.6
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAILPIT_LOCAL_UI_PORT:-8026}:8025"
+    networks: [mail]
+
+networks:
+  mail:

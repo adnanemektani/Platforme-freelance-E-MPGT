@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schema Architecture - Plateforme Freelance E-MPGT</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            color: #333;
+            background: #fff;
+        }
+        h1 {
+            color: #000;
+            border-bottom: 3px solid #000;
+            padding-bottom: 10px;
+            text-align: center;
+        }
+        h2 {
+            color: #000;
+            border-bottom: 2px solid #000;
+            padding-bottom: 8px;
+            margin-top: 40px;
+        }
+        .schema {
+            background: #f5f5f5;
+            border: 2px solid #000;
+            border-radius: 10px;
+            padding: 30px;
+            margin: 20px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre;
+            overflow-x: auto;
+        }
+        .module {
+            background: #e8e8e8;
+            border: 1px solid #666;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        .module h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #666;
+            padding-bottom: 5px;
+        }
+        ul {
+            margin: 10px 0;
+            padding-left: 25px;
+        }
+        li {
+            margin: 5px 0;
+        }
+        .arrow {
+            text-align: center;
+            font-size: 24px;
+            margin: 10px 0;
+        }
+        .box {
+            border: 2px solid #000;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            text-align: center;
+            background: #fff;
+        }
+        .container {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+        }
+        .container > div {
+            flex: 1;
+            min-width: 250px;
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>SCHEMA D'ARCHITECTURE</h1>
+    <p style="text-align: center; font-size: 1.2em;"><strong>Plateforme Freelance E-MPGT</strong></p>
+
+    <h2>1. Vue d'ensemble du systeme</h2>
+    <div class="schema">
+Client (Navigateur Web)
+        |
+        v
++------------------------------------------+
+|          FRONTEND NEXT.JS                |
+|  - Pages: Accueil, Profils, Missions    |
+|  - Composants React                     |
+|  - Styling: Tailwind CSS                |
++------------------------------------------+
+        |
+        v
++------------------------------------------+
+|       BACKEND - API Routes               |
+|  - Auth (Inscription, Connexion)        |
+|  - Profils (CRUD)                       |
+|  - Missions (Publication, Candidatures) |
+|  - Messagerie                           |
+|  - Administration                       |
++------------------------------------------+
+        |
+        v
++------------------------------------------+
+|            PRISMA ORM                   |
+|       (Validation + Queries)            |
++------------------------------------------+
+        |
+        v
++------------------------------------------+
+|      BASE DE DONNEES POSTGRESQL          |
+|  - users                                |
+|  - freelances                           |
+|  - entreprises                          |
+|  - missions                             |
+|  - candidatures                         |
+|  - messages                             |
++------------------------------------------+
+
++------------------------------------------+
+|          SERVICES EXTERNES               |
+|  - Cloudinary (Stockage photos)         |
+|  - Resend (Envoi emails)                |
+|  - Stripe (Paiements - optionnel)       |
++------------------------------------------+</div>
+
+    <h2>2. Modules Fonctionnels</h2>
+    <div class="container">
+        <div class="module">
+            <h3>Espace Freelance</h3>
+            <ul>
+                <li>Mon profil</li>
+                <li>Mes missions</li>
+                <li>Devis</li>
+                <li>Facturation</li>
+                <li>Messagerie</li>
+            </ul>
+        </div>
+        <div class="module">
+            <h3>Espace Entreprise</h3>
+            <ul>
+                <li>Recherche de profils</li>
+                <li>Publier une mission</li>
+                <li>Gestion des candidatures</li>
+                <li>Messagerie</li>
+            </ul>
+        </div>
+        <div class="module">
+            <h3>Espace Admin E-MPGT</h3>
+            <ul>
+                <li>Validation des profils</li>
+                <li>Moderation</li>
+                <li>Statistiques</li>
+                <li>Gestion utilisateurs</li>
+            </ul>
+        </div>
+    </div>
+
+    <h2>3. Flux d'Inscription</h2>
+    <div class="schema">
+Freelance                          Entreprise
+    |                                  |
+    v                                  v
+[Formulaire Inscription]       [Formulaire Inscription]
+    |                                  |
+    v                                  v
+[Verification Email]           [Verification Email]
+    |                                  |
+    v                                  v
+[Validation Admin]             [Compte Active]
+    |                                  |
+    v                                  v
+[Profil En Ligne]              [Peut Publier Missions]</div>
+
+    <h2>4. Flux de Mission</h2>
+    <div class="schema">
+Entreprise                          Freelance
+    |                                   |
+    v                                   |
+[Publie Mission]                       |
+    |                                   |
+    v                                   |
+[Apparait dans Liste]  ---------> [Consulte Missions]
+    |                                   |
+    |                                   v
+    |                            [Postule Candidature]
+    |                                   |
+    v                                   |
+[Recoit Candidatures] <----------------+
+    |
+    v
+[Accepte/Refuse Candidature]
+    |
+    v
+[Mission En Cours]
+    |
+    v
+[Suivi + Facturation]</div>
+
+    <h2>5. Technologies Utilisees</h2>
+    <div class="module">
+        <ul>
+            <li><strong>Frontend :</strong> Next.js, React, Tailwind CSS</li>
+            <li><strong>Backend :</strong> Next.js API Routes, NextAuth.js</li>
+            <li><strong>Base de donnees :</strong> PostgreSQL, Prisma ORM</li>
+            <li><strong>Stockage :</strong> Cloudinary ou AWS S3</li>
+            <li><strong>Emails :</strong> Resend ou SendGrid</li>
+            <li><strong>Paiements :</strong> Stripe (optionnel)</li>
+            <li><strong>Deploiement :</strong> Vercel (frontend) + Supabase/Neon (database)</li>
+        </ul>
+    </div>
+
+    <div style="margin-top: 50px; padding-top: 20px; border-top: 2px solid #000; text-align: center; font-style: italic;">
+        <p>Architecture concue pour evoluer et s'adapter aux besoins futurs</p>
+    </div>
+</body>
+</html>

@@ -1,0 +1,1549 @@
+// Schéma de données de la Plateforme Freelance E-MPGT (V1).
+//
+// Conventions :
+// - identifiants stables UUID v7 (triables chronologiquement) ;
+// - montants en Decimal (jamais de flottants) : 16,2 pour les montants, 14,4 pour les tarifs unitaires ;
+// - dates métier (sans heure) en @db.Date, horodatages en timestamptz ;
+// - les règles d'immuabilité (contrat figé, CRA approuvé, facture vérifiée, journal d'audit)
+//   sont aussi imposées par des triggers PostgreSQL (voir la migration « integrity_rules »).
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  previewFeatures     = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identité
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum RoleCode {
+  PLATFORM_ADMIN
+  COMPANY
+  FREELANCER
+}
+
+/// État du compte (indépendant des validations métier entreprise / profil).
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+model User {
+  id               String     @id @default(uuid(7)) @db.Uuid
+  /// Toujours stocké en minuscules.
+  email            String     @unique
+  /// Null tant que le mot de passe n'a pas été défini (compte administrateur initialisé, invitation).
+  passwordHash     String?
+  firstName        String
+  lastName         String
+  phone            String?
+  status           UserStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt  DateTime?  @db.Timestamptz(3)
+  failedLoginCount Int        @default(0)
+  lockedUntil      DateTime?  @db.Timestamptz(3)
+  lastLoginAt      DateTime?  @db.Timestamptz(3)
+  statusReason     String?
+  /// Données fictives de démonstration (jamais en production).
+  isDemo           Boolean    @default(false)
+  createdAt        DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime   @updatedAt @db.Timestamptz(3)
+
+  roles             UserRole[]          @relation("UserRoles")
+  rolesGranted      UserRole[]          @relation("RoleGrantedBy")
+  sessions          Session[]
+  authTokens        AuthToken[]
+  memberships       CompanyMembership[]
+  freelancerProfile FreelancerProfile?  @relation("ProfileOwner")
+  notifications     Notification[]
+  invitationsSent   Invitation[]        @relation("InvitationSender")
+  invitationsUsed   Invitation[]        @relation("InvitationAcceptedBy")
+  documentsUploaded Document[]          @relation("DocumentUploader")
+  missionsCreated   Mission[]           @relation("MissionCreator")
+  auditEvents       AuditEvent[]
+}
+
+model UserRole {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  userId      String    @db.Uuid
+  role        RoleCode
+  grantedById String?   @db.Uuid
+  grantedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
+
+  user      User  @relation("UserRoles", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("RoleGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@unique([userId, role])
+}
+
+/// Session serveur : seul le condensat SHA-256 du jeton est stocké.
+model Session {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  tokenHash     String    @unique
+  userId        String    @db.Uuid
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  lastSeenAt    DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt     DateTime  @db.Timestamptz(3)
+  revokedAt     DateTime? @db.Timestamptz(3)
+  revokedReason String?
+  /// Adresse IP tronquée (/24 en IPv4, /48 en IPv6) : suffisante pour la sécurité, minimise la donnée personnelle.
+  ipPrefix      String?
+  userAgent     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+model AuthToken {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  userId    String        @db.Uuid
+  type      AuthTokenType
+  tokenHash String        @unique
+  expiresAt DateTime      @db.Timestamptz(3)
+  usedAt    DateTime?     @db.Timestamptz(3)
+  createdAt DateTime      @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+}
+
+enum InvitationType {
+  /// Rejoindre une organisation entreprise.
+  COMPANY_MEMBER
+  /// Rattacher un profil historique importé à un compte freelance (après vérification par E-MPGT).
+  PROFILE_CLAIM
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+model Invitation {
+  id                  String           @id @default(uuid(7)) @db.Uuid
+  type                InvitationType
+  email               String
+  tokenHash           String           @unique
+  status              InvitationStatus @default(PENDING)
+  companyId           String?          @db.Uuid
+  companyRole         CompanyRole?
+  freelancerProfileId String?          @db.Uuid
+  message             String?
+  invitedById         String           @db.Uuid
+  expiresAt           DateTime         @db.Timestamptz(3)
+  acceptedAt          DateTime?        @db.Timestamptz(3)
+  acceptedById        String?          @db.Uuid
+  revokedAt           DateTime?        @db.Timestamptz(3)
+  createdAt           DateTime         @default(now()) @db.Timestamptz(3)
+
+  company           Company?           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  freelancerProfile FreelancerProfile? @relation(fields: [freelancerProfileId], references: [id], onDelete: Cascade)
+  invitedBy         User               @relation("InvitationSender", fields: [invitedById], references: [id])
+  acceptedBy        User?              @relation("InvitationAcceptedBy", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@index([email])
+  @@index([companyId])
+  @@index([freelancerProfileId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Entreprises
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Validation de l'entreprise par E-MPGT (indépendante de l'état du compte utilisateur).
+enum CompanyVerificationStatus {
+  NOT_SUBMITTED
+  PENDING
+  VERIFIED
+  CHANGES_REQUESTED
+  REJECTED
+}
+
+enum CompanyStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum CompanyRole {
+  /// Responsable de l'organisation (jamais administrateur de la plateforme).
+  OWNER
+  MEMBER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum ContactKind {
+  PRIMARY
+  BILLING
+  OPERATIONS
+  OTHER
+}
+
+model Company {
+  id                      String                    @id @default(uuid(7)) @db.Uuid
+  legalName               String
+  tradeName               String?
+  legalForm               String?
+  /// Identifiant d'immatriculation tel que fourni (SIREN/SIRET, RC, ICE, RCCM…) : le type dépend du pays.
+  registrationNumber      String?
+  registrationType        String?
+  vatNumber               String?
+  addressLine1            String?
+  addressLine2            String?
+  postalCode              String?
+  city                    String?
+  /// Code pays ISO 3166-1 alpha-2.
+  country                 String?
+  sector                  String?
+  sizeRange               String?
+  website                 String?
+  description             String?
+  verificationStatus      CompanyVerificationStatus @default(NOT_SUBMITTED)
+  /// Message d'E-MPGT à l'entreprise (correction demandée, refus).
+  verificationNote        String?
+  verificationSubmittedAt DateTime?                 @db.Timestamptz(3)
+  verifiedAt              DateTime?                 @db.Timestamptz(3)
+  verifiedById            String?                   @db.Uuid
+  status                  CompanyStatus             @default(ACTIVE)
+  statusReason            String?
+  /// Notes internes E-MPGT : jamais exposées à l'entreprise.
+  internalNotes           String?
+  isDemo                  Boolean                   @default(false)
+  createdAt               DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime                  @updatedAt @db.Timestamptz(3)
+
+  memberships CompanyMembership[]
+  contacts    CompanyContact[]
+  missions    Mission[]
+  invitations Invitation[]
+  proposals   CommercialProposal[]
+  contracts   Contract[]
+  invoices    Invoice[]
+  documents   Document[]
+
+  @@index([verificationStatus])
+}
+
+model CompanyMembership {
+  id        String           @id @default(uuid(7)) @db.Uuid
+  companyId String           @db.Uuid
+  userId    String           @db.Uuid
+  role      CompanyRole
+  status    MembershipStatus @default(ACTIVE)
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+  revokedAt DateTime?        @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId])
+  @@index([userId])
+}
+
+model CompanyContact {
+  id        String      @id @default(uuid(7)) @db.Uuid
+  companyId String      @db.Uuid
+  kind      ContactKind @default(PRIMARY)
+  fullName  String
+  jobTitle  String?
+  email     String?
+  phone     String?
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime    @updatedAt @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Freelances
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ProfileOrigin {
+  SELF_REGISTERED
+  /// Profil historique importé (peut exister sans compte utilisateur).
+  IMPORTED
+  /// Données fictives de démonstration.
+  DEMO
+}
+
+/// Validation du profil par E-MPGT.
+enum ProfileValidationStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  CHANGES_REQUESTED
+  REJECTED
+  SUSPENDED
+}
+
+enum CatalogVisibility {
+  /// Visible uniquement par le freelance, E-MPGT et, au cas par cas, les entreprises auxquelles il candidate.
+  PRIVATE
+  /// Fiche anonymisée dans le catalogue public (exige validation + consentement explicite).
+  PUBLIC_ANONYMOUS
+}
+
+enum Mobility {
+  LOCAL
+  REGIONAL
+  NATIONAL
+  INTERNATIONAL
+}
+
+enum WorkMode {
+  ONSITE
+  REMOTE
+  HYBRID
+}
+
+enum BusinessStatus {
+  MICRO_ENTREPRENEUR
+  COMPANY
+  PORTAGE
+  OTHER
+}
+
+enum AvailabilityStatus {
+  UNKNOWN
+  AVAILABLE_NOW
+  AVAILABLE_FROM
+  UNAVAILABLE
+}
+
+enum RateUnit {
+  HOUR
+  DAY
+}
+
+model FreelancerProfile {
+  id                   String                  @id @default(uuid(7)) @db.Uuid
+  userId               String?                 @unique @db.Uuid
+  origin               ProfileOrigin
+  /// Titre du profil (obligatoire à la soumission).
+  headline             String?
+  summary              String?
+  yearsOfExperience    Int?
+  city                 String?
+  region               String?
+  country              String?
+  mobility             Mobility?
+  mobilityNote         String?
+  workModes            WorkMode[]              @default([])
+  businessStatus       BusinessStatus?
+  availabilityStatus   AvailabilityStatus      @default(UNKNOWN)
+  availableFrom        DateTime?               @db.Date
+  /// Préférences tarifaires : privées (freelance + E-MPGT). Ne remplacent jamais les conditions d'un contrat.
+  rateMin              Decimal?                @db.Decimal(14, 2)
+  rateMax              Decimal?                @db.Decimal(14, 2)
+  rateUnit             RateUnit?
+  rateCurrency         String?                 @db.Char(3)
+  rateNote             String?
+  validationStatus     ProfileValidationStatus @default(DRAFT)
+  validationNote       String?
+  submittedAt          DateTime?               @db.Timestamptz(3)
+  reviewedAt           DateTime?               @db.Timestamptz(3)
+  reviewedById         String?                 @db.Uuid
+  catalogVisibility    CatalogVisibility       @default(PRIVATE)
+  publicationConsentAt DateTime?               @db.Timestamptz(3)
+  // Provenance des profils importés
+  sourceUrl            String?
+  sourceCollectedAt    DateTime?               @db.Timestamptz(3)
+  sourceExternalKey    String?                 @unique
+  /// Champs corrigés par un humain : une réexécution de l'import ne les écrase jamais.
+  importLockedFields   String[]                @default([])
+  /// Champs « à confirmer » (absents de la source ou non vérifiables).
+  fieldsToConfirm      String[]                @default([])
+  /// Notes internes E-MPGT.
+  internalNotes        String?
+  createdAt            DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime                @updatedAt @db.Timestamptz(3)
+
+  user                 User?                 @relation("ProfileOwner", fields: [userId], references: [id], onDelete: SetNull)
+  skills               FreelancerSkill[]
+  experiences          Experience[]
+  educations           Education[]
+  languages            Language[]
+  qualifications       Qualification[]
+  availabilities       Availability[]
+  applications         Application[]
+  proposals            CommercialProposal[]
+  contracts            Contract[]
+  invoices             Invoice[]
+  payouts              PayoutRecord[]
+  documents            Document[]
+  invitations          Invitation[]
+  paymentConfiguration PaymentConfiguration?
+  importItems          ImportItem[]          @relation("ImportItemProfile")
+  duplicateOfItems     ImportItem[]          @relation("ImportItemDuplicateOf")
+
+  @@index([validationStatus])
+  @@index([catalogVisibility])
+}
+
+enum SkillCategory {
+  TECHNICAL
+  SOFTWARE
+  MANAGEMENT
+  DOMAIN
+  OTHER
+}
+
+model Skill {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  name      String
+  /// Forme normalisée (minuscules, sans accents) : garantit l'unicité.
+  slug      String        @unique
+  category  SkillCategory @default(TECHNICAL)
+  createdAt DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @db.Timestamptz(3)
+
+  freelancers FreelancerSkill[]
+  missions    MissionSkill[]
+}
+
+model FreelancerSkill {
+  id                String  @id @default(uuid(7)) @db.Uuid
+  profileId         String  @db.Uuid
+  skillId           String  @db.Uuid
+  level             String?
+  yearsOfExperience Int?
+
+  profile FreelancerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  skill   Skill             @relation(fields: [skillId], references: [id])
+
+  @@unique([profileId, skillId])
+  @@index([skillId])
+}
+
+model Experience {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  profileId    String   @db.Uuid
+  position     Int      @default(0)
+  title        String
+  organization String?
+  location     String?
+  /// Période telle qu'exprimée par la source (ex. « 03/24 – 08/25 »).
+  periodLabel  String?
+  startYear    Int?
+  startMonth   Int?
+  endYear      Int?
+  endMonth     Int?
+  isCurrent    Boolean  @default(false)
+  description  String?
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  profile FreelancerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+model Education {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  profileId   String   @db.Uuid
+  position    Int      @default(0)
+  title       String
+  institution String?
+  periodLabel String?
+  year        Int?
+  description String?
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  profile FreelancerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+model Language {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  profileId String  @db.Uuid
+  position  Int     @default(0)
+  name      String
+  /// Niveau tel que déclaré (ex. « courant », « notions »).
+  level     String?
+
+  profile FreelancerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+}
+
+enum QualificationStatus {
+  /// Déclarée par le freelance ou issue d'un import : non vérifiée.
+  DECLARED
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+  EXPIRED
+}
+
+model Qualification {
+  id               String              @id @default(uuid(7)) @db.Uuid
+  profileId        String              @db.Uuid
+  name             String
+  issuer           String?
+  reference        String?
+  obtainedAt       DateTime?           @db.Date
+  expiresAt        DateTime?           @db.Date
+  status           QualificationStatus @default(DECLARED)
+  verifiedAt       DateTime?           @db.Timestamptz(3)
+  verifiedById     String?             @db.Uuid
+  verificationNote String?
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+
+  profile   FreelancerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  documents Document[]
+
+  @@index([profileId])
+}
+
+enum AvailabilityKind {
+  AVAILABLE
+  PARTIAL
+  UNAVAILABLE
+}
+
+model Availability {
+  id          String           @id @default(uuid(7)) @db.Uuid
+  profileId   String           @db.Uuid
+  kind        AvailabilityKind
+  startDate   DateTime         @db.Date
+  endDate     DateTime?        @db.Date
+  daysPerWeek Decimal?         @db.Decimal(3, 1)
+  note        String?
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime         @updatedAt @db.Timestamptz(3)
+
+  profile FreelancerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, startDate])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Missions et candidatures
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Publication de la mission (visibilité), distincte de son avancement.
+enum MissionPublicationStatus {
+  DRAFT
+  PENDING_REVIEW
+  CHANGES_REQUESTED
+  PUBLISHED
+  REJECTED
+  UNPUBLISHED
+}
+
+/// Avancement de la mission. V1 : une mission = un poste à pourvoir.
+enum MissionStatus {
+  /// Ouverte aux candidatures (si publiée).
+  OPEN
+  /// Candidat retenu : proposition commerciale et contractualisation en cours.
+  SELECTION
+  ACTIVE
+  SUSPENDED
+  COMPLETED
+  CANCELLED
+}
+
+model Mission {
+  id                         String                   @id @default(uuid(7)) @db.Uuid
+  reference                  String                   @unique
+  companyId                  String                   @db.Uuid
+  createdById                String                   @db.Uuid
+  title                      String
+  description                String
+  profileSought              String?
+  sector                     String?
+  city                       String?
+  region                     String?
+  country                    String?
+  workMode                   WorkMode?
+  startDate                  DateTime?                @db.Date
+  endDate                    DateTime?                @db.Date
+  durationLabel              String?
+  budgetMin                  Decimal?                 @db.Decimal(14, 2)
+  budgetMax                  Decimal?                 @db.Decimal(14, 2)
+  budgetUnit                 RateUnit?
+  budgetCurrency             String?                  @db.Char(3)
+  budgetVisibleToFreelancers Boolean                  @default(false)
+  applicationDeadline        DateTime?                @db.Date
+  publicationStatus          MissionPublicationStatus @default(DRAFT)
+  status                     MissionStatus            @default(OPEN)
+  /// Retour d'E-MPGT à l'entreprise (correction demandée, refus, dépublication).
+  reviewNote                 String?
+  submittedAt                DateTime?                @db.Timestamptz(3)
+  reviewedAt                 DateTime?                @db.Timestamptz(3)
+  reviewedById               String?                  @db.Uuid
+  publishedAt                DateTime?                @db.Timestamptz(3)
+  statusReason               String?
+  isDemo                     Boolean                  @default(false)
+  createdAt                  DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt                  DateTime                 @updatedAt @db.Timestamptz(3)
+
+  company      Company              @relation(fields: [companyId], references: [id])
+  createdBy    User                 @relation("MissionCreator", fields: [createdById], references: [id])
+  skills       MissionSkill[]
+  applications Application[]
+  proposals    CommercialProposal[]
+  contracts    Contract[]
+  documents    Document[]
+
+  @@index([companyId])
+  @@index([publicationStatus, status])
+}
+
+model MissionSkill {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  missionId String  @db.Uuid
+  skillId   String  @db.Uuid
+  required  Boolean @default(true)
+
+  mission Mission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  skill   Skill   @relation(fields: [skillId], references: [id])
+
+  @@unique([missionId, skillId])
+  @@index([skillId])
+}
+
+enum ApplicationStatus {
+  SUBMITTED
+  SHORTLISTED
+  SELECTED
+  REJECTED
+  WITHDRAWN
+  /// Clôturée sans décision individuelle (mission pourvue, annulée…).
+  CLOSED
+}
+
+model Application {
+  id                   String            @id @default(uuid(7)) @db.Uuid
+  missionId            String            @db.Uuid
+  profileId            String            @db.Uuid
+  submittedById        String            @db.Uuid
+  message              String
+  availabilityNote     String?
+  /// Tarif indicatif proposé par le freelance : visible par E-MPGT uniquement.
+  proposedRate         Decimal?          @db.Decimal(14, 2)
+  proposedRateUnit     RateUnit?
+  proposedRateCurrency String?           @db.Char(3)
+  status               ApplicationStatus @default(SUBMITTED)
+  statusReason         String?
+  decidedById          String?           @db.Uuid
+  decidedAt            DateTime?         @db.Timestamptz(3)
+  createdAt            DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime          @updatedAt @db.Timestamptz(3)
+
+  mission   Mission              @relation(fields: [missionId], references: [id])
+  profile   FreelancerProfile    @relation(fields: [profileId], references: [id])
+  proposals CommercialProposal[]
+  contracts Contract[]
+
+  @@unique([missionId, profileId])
+  /// Sélection transactionnelle : au plus une candidature retenue par mission (un poste).
+  @@unique([missionId], map: "Application_one_selected_per_mission", where: raw("(status = 'SELECTED'::\"ApplicationStatus\")"))
+  @@index([profileId])
+  @@index([missionId, status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Commercial : propositions, contrats, avenants
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ProposalStatus {
+  DRAFT
+  SENT
+  /// Les deux parties ont accepté ; en attente de validation E-MPGT.
+  PARTIES_AGREED
+  /// Validée par E-MPGT : le contrat est généré.
+  APPROVED
+  DECLINED
+  WITHDRAWN
+  SUPERSEDED
+}
+
+enum PartyDecision {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum BillingUnit {
+  HOUR
+  DAY
+}
+
+enum CommissionPayer {
+  /// Commission ajoutée à la facturation client.
+  CLIENT
+  /// Commission déduite de la rémunération freelance.
+  FREELANCER
+  /// Aucune commission (exception explicitement validée et motivée).
+  NONE
+}
+
+enum CommissionMode {
+  PERCENTAGE
+  FIXED_PER_UNIT
+}
+
+enum CommissionBase {
+  CLIENT_AMOUNT
+  FREELANCE_AMOUNT
+}
+
+enum InvoiceAddressee {
+  EMPGT
+  CLIENT
+}
+
+model CommercialProposal {
+  id                            String            @id @default(uuid(7)) @db.Uuid
+  reference                     String            @unique
+  version                       Int               @default(1)
+  previousId                    String?           @unique @db.Uuid
+  missionId                     String            @db.Uuid
+  applicationId                 String            @db.Uuid
+  companyId                     String            @db.Uuid
+  profileId                     String            @db.Uuid
+  status                        ProposalStatus    @default(DRAFT)
+  startDate                     DateTime?         @db.Date
+  endDate                       DateTime?         @db.Date
+  currency                      String?           @db.Char(3)
+  billingUnit                   BillingUnit?
+  /// Heures de référence par journée : obligatoire si l'unité est le jour (aucune valeur supposée).
+  hoursPerDay                   Decimal?          @db.Decimal(4, 2)
+  freelanceRate                 Decimal?          @db.Decimal(14, 4)
+  clientRate                    Decimal?          @db.Decimal(14, 4)
+  estimatedQuantity             Decimal?          @db.Decimal(10, 2)
+  commissionPayer               CommissionPayer?
+  commissionMode                CommissionMode?
+  commissionBase                CommissionBase?
+  commissionValue               Decimal?          @db.Decimal(14, 4)
+  /// Justification obligatoire d'une exception (aucune commission, écart à la politique).
+  commissionNote                String?
+  commissionVisibleToCompany    Boolean           @default(false)
+  commissionVisibleToFreelancer Boolean           @default(false)
+  expensesPolicy                String?
+  taxNote                       String?
+  timesheetValidationRule       String?
+  clientPaymentTermsDays        Int?
+  freelancerPaymentTermsDays    Int?
+  paymentTermsNote              String?
+  freelancerInvoiceAddressee    InvoiceAddressee?
+  companyDecision               PartyDecision     @default(PENDING)
+  companyDecisionAt             DateTime?         @db.Timestamptz(3)
+  companyDecisionById           String?           @db.Uuid
+  companyDecisionComment        String?
+  freelancerDecision            PartyDecision     @default(PENDING)
+  freelancerDecisionAt          DateTime?         @db.Timestamptz(3)
+  freelancerDecisionById        String?           @db.Uuid
+  freelancerDecisionComment     String?
+  sentAt                        DateTime?         @db.Timestamptz(3)
+  approvedAt                    DateTime?         @db.Timestamptz(3)
+  approvedById                  String?           @db.Uuid
+  statusReason                  String?
+  internalNotes                 String?
+  createdById                   String            @db.Uuid
+  createdAt                     DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt                     DateTime          @updatedAt @db.Timestamptz(3)
+
+  mission     Mission             @relation(fields: [missionId], references: [id])
+  application Application         @relation(fields: [applicationId], references: [id])
+  company     Company             @relation(fields: [companyId], references: [id])
+  profile     FreelancerProfile   @relation(fields: [profileId], references: [id])
+  previous    CommercialProposal? @relation("ProposalVersions", fields: [previousId], references: [id])
+  next        CommercialProposal? @relation("ProposalVersions")
+  contract    Contract?
+
+  /// Une seule proposition « vivante » par candidature.
+  @@unique([applicationId], map: "Proposal_one_live_per_application", where: raw("(status = ANY (ARRAY['DRAFT'::\"ProposalStatus\", 'SENT'::\"ProposalStatus\", 'PARTIES_AGREED'::\"ProposalStatus\"]))"))
+  @@index([missionId])
+  @@index([companyId])
+  @@index([profileId])
+}
+
+enum ContractStatus {
+  AWAITING_SIGNATURE
+  SIGNED
+  ACTIVE
+  SUSPENDED
+  COMPLETED
+  TERMINATED
+  CANCELLED
+}
+
+/// Contrat : les conditions sont figées à la création (trigger d'immuabilité) ;
+/// toute évolution passe par un avenant tracé.
+model Contract {
+  id                            String           @id @default(uuid(7)) @db.Uuid
+  reference                     String           @unique
+  proposalId                    String           @unique @db.Uuid
+  missionId                     String           @db.Uuid
+  applicationId                 String           @db.Uuid
+  companyId                     String           @db.Uuid
+  profileId                     String           @db.Uuid
+  status                        ContractStatus   @default(AWAITING_SIGNATURE)
+  // Conditions figées
+  startDate                     DateTime         @db.Date
+  endDate                       DateTime?        @db.Date
+  currency                      String           @db.Char(3)
+  billingUnit                   BillingUnit
+  hoursPerDay                   Decimal?         @db.Decimal(4, 2)
+  freelanceRate                 Decimal          @db.Decimal(14, 4)
+  clientRate                    Decimal          @db.Decimal(14, 4)
+  commissionPayer               CommissionPayer
+  commissionMode                CommissionMode?
+  commissionBase                CommissionBase?
+  commissionValue               Decimal?         @db.Decimal(14, 4)
+  commissionNote                String?
+  commissionVisibleToCompany    Boolean
+  commissionVisibleToFreelancer Boolean
+  expensesPolicy                String?
+  taxNote                       String?
+  timesheetValidationRule       String?
+  clientPaymentTermsDays        Int?
+  freelancerPaymentTermsDays    Int?
+  paymentTermsNote              String?
+  freelancerInvoiceAddressee    InvoiceAddressee
+  partiesSnapshot               Json
+  termsSnapshot                 Json
+  /// SHA-256 de l'instantané canonique des conditions : preuve d'intégrité.
+  termsHash                     String
+  // Fin effective après avenants signés (seule date modifiable, uniquement par avenant).
+  currentEndDate                DateTime?        @db.Date
+  // Dépôt du contrat signé (pas une signature électronique intégrée)
+  signedDocumentId              String?          @unique @db.Uuid
+  signedAt                      DateTime?        @db.Date
+  signatureProofNote            String?
+  signatureRecordedById         String?          @db.Uuid
+  signatureRecordedAt           DateTime?        @db.Timestamptz(3)
+  activatedAt                   DateTime?        @db.Timestamptz(3)
+  activatedById                 String?          @db.Uuid
+  closedAt                      DateTime?        @db.Timestamptz(3)
+  statusReason                  String?
+  createdById                   String           @db.Uuid
+  createdAt                     DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt                     DateTime         @updatedAt @db.Timestamptz(3)
+
+  proposal       CommercialProposal  @relation(fields: [proposalId], references: [id])
+  mission        Mission             @relation(fields: [missionId], references: [id])
+  application    Application         @relation(fields: [applicationId], references: [id])
+  company        Company             @relation(fields: [companyId], references: [id])
+  profile        FreelancerProfile   @relation(fields: [profileId], references: [id])
+  signedDocument Document?           @relation("ContractSignedDocument", fields: [signedDocumentId], references: [id])
+  amendments     ContractAmendment[]
+  timesheets     Timesheet[]
+  invoices       Invoice[]
+  payouts        PayoutRecord[]
+  reviews        Review[]
+  disputes       Dispute[]
+  documents      Document[]          @relation("ContractDocuments")
+
+  /// Une mission = un poste : un seul contrat non annulé par mission.
+  @@unique([missionId], map: "Contract_one_live_per_mission", where: raw("(status = ANY (ARRAY['AWAITING_SIGNATURE'::\"ContractStatus\", 'SIGNED'::\"ContractStatus\", 'ACTIVE'::\"ContractStatus\", 'SUSPENDED'::\"ContractStatus\", 'COMPLETED'::\"ContractStatus\"]))"))
+  @@index([companyId])
+  @@index([profileId])
+  @@index([missionId])
+}
+
+enum AmendmentType {
+  /// Prolongation (nouvelle date de fin).
+  EXTENSION
+  /// Modification de conditions à partir d'une date d'effet.
+  TERMS_CHANGE
+  OTHER
+}
+
+enum AmendmentStatus {
+  DRAFT
+  AWAITING_SIGNATURE
+  SIGNED
+  CANCELLED
+}
+
+model ContractAmendment {
+  id                    String          @id @default(uuid(7)) @db.Uuid
+  contractId            String          @db.Uuid
+  number                Int
+  type                  AmendmentType
+  status                AmendmentStatus @default(AWAITING_SIGNATURE)
+  effectiveDate         DateTime        @db.Date
+  reason                String
+  newEndDate            DateTime?       @db.Date
+  newFreelanceRate      Decimal?        @db.Decimal(14, 4)
+  newClientRate         Decimal?        @db.Decimal(14, 4)
+  newHoursPerDay        Decimal?        @db.Decimal(4, 2)
+  newCommissionValue    Decimal?        @db.Decimal(14, 4)
+  otherChanges          String?
+  changesSnapshot       Json
+  signedDocumentId      String?         @unique @db.Uuid
+  signedAt              DateTime?       @db.Date
+  signatureProofNote    String?
+  signatureRecordedById String?         @db.Uuid
+  statusReason          String?
+  createdById           String          @db.Uuid
+  createdAt             DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime        @updatedAt @db.Timestamptz(3)
+
+  contract       Contract  @relation(fields: [contractId], references: [id])
+  signedDocument Document? @relation("AmendmentSignedDocument", fields: [signedDocumentId], references: [id])
+
+  @@unique([contractId, number])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Activité : CRA (comptes rendus d'activité)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  CHANGES_REQUESTED
+  /// Remplacé par une version corrigée approuvée (correction tracée).
+  SUPERSEDED
+  CANCELLED
+}
+
+model Timesheet {
+  id                     String          @id @default(uuid(7)) @db.Uuid
+  contractId             String          @db.Uuid
+  periodStart            DateTime        @db.Date
+  periodEnd              DateTime        @db.Date
+  version                Int             @default(1)
+  supersedesId           String?         @unique @db.Uuid
+  status                 TimesheetStatus @default(DRAFT)
+  totalHours             Decimal         @default(0) @db.Decimal(7, 2)
+  freelancerComment      String?
+  submittedAt            DateTime?       @db.Timestamptz(3)
+  submittedById          String?         @db.Uuid
+  approvedAt             DateTime?       @db.Timestamptz(3)
+  approvedById           String?         @db.Uuid
+  /// Validation par E-MPGT à la place du client : motif obligatoire.
+  approvedOnBehalf       Boolean         @default(false)
+  approvalReason         String?
+  changesRequestedAt     DateTime?       @db.Timestamptz(3)
+  changesRequestedById   String?         @db.Uuid
+  changesRequestedReason String?
+  /// Motif de la correction d'un CRA déjà approuvé.
+  correctionReason       String?
+  /// Quantités et montants calculés à l'approbation (instantané, selon les conditions du contrat).
+  amountsSnapshot        Json?
+  createdAt              DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime        @updatedAt @db.Timestamptz(3)
+
+  contract   Contract         @relation(fields: [contractId], references: [id])
+  supersedes Timesheet?       @relation("TimesheetCorrections", fields: [supersedesId], references: [id])
+  correction Timesheet?       @relation("TimesheetCorrections")
+  entries    TimesheetEntry[]
+  invoices   Invoice[]
+  disputes   Dispute[]
+  documents  Document[]
+
+  /// Au plus un CRA approuvé et un CRA en cours par contrat et par période.
+  @@unique([contractId, periodStart], map: "Timesheet_one_approved_per_period", where: raw("(status = 'APPROVED'::\"TimesheetStatus\")"))
+  @@unique([contractId, periodStart], map: "Timesheet_one_open_per_period", where: raw("(status = ANY (ARRAY['DRAFT'::\"TimesheetStatus\", 'SUBMITTED'::\"TimesheetStatus\", 'CHANGES_REQUESTED'::\"TimesheetStatus\"]))"))
+  @@index([contractId, periodStart])
+}
+
+model TimesheetEntry {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  timesheetId String   @db.Uuid
+  date        DateTime @db.Date
+  hours       Decimal  @db.Decimal(5, 2)
+  comment     String?
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  timesheet Timesheet @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+
+  @@unique([timesheetId, date])
+}
+
+enum DisputeSubject {
+  TIMESHEET
+  INVOICE
+  CONTRACT
+}
+
+enum DisputeStatus {
+  OPEN
+  RESOLVED
+  CLOSED
+}
+
+model Dispute {
+  id           String         @id @default(uuid(7)) @db.Uuid
+  subjectType  DisputeSubject
+  contractId   String         @db.Uuid
+  timesheetId  String?        @db.Uuid
+  invoiceId    String?        @db.Uuid
+  openedById   String         @db.Uuid
+  reason       String
+  status       DisputeStatus  @default(OPEN)
+  resolution   String?
+  resolvedById String?        @db.Uuid
+  resolvedAt   DateTime?      @db.Timestamptz(3)
+  createdAt    DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime       @updatedAt @db.Timestamptz(3)
+
+  contract  Contract   @relation(fields: [contractId], references: [id])
+  timesheet Timesheet? @relation(fields: [timesheetId], references: [id])
+  invoice   Invoice?   @relation(fields: [invoiceId], references: [id])
+
+  @@index([contractId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Documents
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum DocumentKind {
+  CV
+  IDENTITY
+  INSURANCE
+  COMPANY_REGISTRATION
+  TAX_SOCIAL_CERTIFICATE
+  QUALIFICATION_CERTIFICATE
+  SIGNED_CONTRACT
+  SIGNED_AMENDMENT
+  INVOICE
+  PAYMENT_PROOF
+  TIMESHEET_ATTACHMENT
+  IMPORT_SNAPSHOT
+  OTHER
+}
+
+/// Visibilité contrôlée côté serveur ; privé par défaut.
+enum DocumentVisibility {
+  /// Déposant (et son profil / organisation) + E-MPGT.
+  OWNER_AND_ADMIN
+  /// Parties du contrat rattaché + E-MPGT.
+  CONTRACT_PARTIES
+  /// Membres de l'entreprise rattachée + E-MPGT.
+  COMPANY_AND_ADMIN
+  /// E-MPGT uniquement.
+  ADMIN_ONLY
+}
+
+enum DocumentVerificationStatus {
+  NOT_REQUIRED
+  PENDING
+  VERIFIED
+  REJECTED
+  EXPIRED
+}
+
+model Document {
+  id                 String                     @id @default(uuid(7)) @db.Uuid
+  kind               DocumentKind
+  title              String?
+  originalFilename   String
+  mimeType           String
+  sizeBytes          Int
+  sha256             String
+  storageKey         String                     @unique
+  visibility         DocumentVisibility         @default(OWNER_AND_ADMIN)
+  uploadedById       String?                    @db.Uuid
+  profileId          String?                    @db.Uuid
+  companyId          String?                    @db.Uuid
+  missionId          String?                    @db.Uuid
+  contractId         String?                    @db.Uuid
+  invoiceId          String?                    @db.Uuid
+  qualificationId    String?                    @db.Uuid
+  timesheetId        String?                    @db.Uuid
+  importBatchId      String?                    @db.Uuid
+  verificationStatus DocumentVerificationStatus @default(NOT_REQUIRED)
+  verificationNote   String?
+  verifiedById       String?                    @db.Uuid
+  verifiedAt         DateTime?                  @db.Timestamptz(3)
+  expiresAt          DateTime?                  @db.Date
+  deletedAt          DateTime?                  @db.Timestamptz(3)
+  deletedById        String?                    @db.Uuid
+  deleteReason       String?
+  createdAt          DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime                   @updatedAt @db.Timestamptz(3)
+
+  uploadedBy      User?              @relation("DocumentUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  profile         FreelancerProfile? @relation(fields: [profileId], references: [id])
+  company         Company?           @relation(fields: [companyId], references: [id])
+  mission         Mission?           @relation(fields: [missionId], references: [id])
+  contract        Contract?          @relation("ContractDocuments", fields: [contractId], references: [id])
+  invoice         Invoice?           @relation("InvoiceDocuments", fields: [invoiceId], references: [id])
+  qualification   Qualification?     @relation(fields: [qualificationId], references: [id])
+  timesheet       Timesheet?         @relation(fields: [timesheetId], references: [id])
+  importBatch     ImportBatch?       @relation(fields: [importBatchId], references: [id])
+  signedContract  Contract?          @relation("ContractSignedDocument")
+  signedAmendment ContractAmendment? @relation("AmendmentSignedDocument")
+  invoiceMain     Invoice?           @relation("InvoiceMainDocument")
+  paymentProof    PaymentRecord?
+  payoutProof     PayoutRecord?
+
+  @@index([profileId])
+  @@index([companyId])
+  @@index([contractId])
+  @@index([invoiceId])
+  @@index([kind, verificationStatus])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Finance : factures, encaissements, règlements (suivi manuel en V1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum InvoiceKind {
+  /// Facture adressée au client (émetteur à confirmer : décision D-04).
+  CLIENT_INVOICE
+  /// Facture émise par le freelance.
+  FREELANCER_INVOICE
+}
+
+enum InvoiceStatus {
+  SUBMITTED
+  VERIFIED
+  REJECTED
+  CANCELLED
+}
+
+enum PaymentState {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+model Invoice {
+  id                    String           @id @default(uuid(7)) @db.Uuid
+  kind                  InvoiceKind
+  /// Numéro tel qu'il figure sur la facture déposée.
+  number                String
+  contractId            String           @db.Uuid
+  timesheetId           String?          @db.Uuid
+  companyId             String           @db.Uuid
+  profileId             String           @db.Uuid
+  issuerLabel           String
+  addressee             InvoiceAddressee
+  issueDate             DateTime         @db.Date
+  dueDate               DateTime         @db.Date
+  currency              String           @db.Char(3)
+  /// Montants déclarés d'après le document (la plateforme ne calcule pas les taxes).
+  amountExclTax         Decimal          @db.Decimal(16, 2)
+  taxAmount             Decimal          @db.Decimal(16, 2)
+  amountInclTax         Decimal          @db.Decimal(16, 2)
+  /// Montant HT attendu d'après le CRA approuvé et le contrat (rapprochement).
+  expectedAmountExclTax Decimal?         @db.Decimal(16, 2)
+  documentId            String           @unique @db.Uuid
+  status                InvoiceStatus    @default(SUBMITTED)
+  statusReason          String?
+  verifiedAt            DateTime?        @db.Timestamptz(3)
+  verifiedById          String?          @db.Uuid
+  paymentState          PaymentState     @default(UNPAID)
+  paidAmount            Decimal          @default(0) @db.Decimal(16, 2)
+  submittedById         String           @db.Uuid
+  createdAt             DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime         @updatedAt @db.Timestamptz(3)
+
+  contract  Contract          @relation(fields: [contractId], references: [id])
+  timesheet Timesheet?        @relation(fields: [timesheetId], references: [id])
+  company   Company           @relation(fields: [companyId], references: [id])
+  profile   FreelancerProfile @relation(fields: [profileId], references: [id])
+  document  Document          @relation("InvoiceMainDocument", fields: [documentId], references: [id])
+  documents Document[]        @relation("InvoiceDocuments")
+  payments  PaymentRecord[]
+  payouts   PayoutRecord[]
+  disputes  Dispute[]
+
+  /// Numéros de facture uniques (hors factures refusées ou annulées) et pas de double facturation d'un CRA.
+  @@unique([profileId, number], map: "Invoice_freelancer_number_unique", where: raw("((kind = 'FREELANCER_INVOICE'::\"InvoiceKind\") AND (status = ANY (ARRAY['SUBMITTED'::\"InvoiceStatus\", 'VERIFIED'::\"InvoiceStatus\"])))"))
+  @@unique([number], map: "Invoice_client_number_unique", where: raw("((kind = 'CLIENT_INVOICE'::\"InvoiceKind\") AND (status = ANY (ARRAY['SUBMITTED'::\"InvoiceStatus\", 'VERIFIED'::\"InvoiceStatus\"])))"))
+  @@unique([timesheetId, kind], map: "Invoice_one_per_timesheet_and_kind", where: raw("((\"timesheetId\" IS NOT NULL) AND (status = ANY (ARRAY['SUBMITTED'::\"InvoiceStatus\", 'VERIFIED'::\"InvoiceStatus\"])))"))
+  @@index([contractId])
+  @@index([companyId])
+  @@index([profileId])
+  @@index([status, paymentState])
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  CHEQUE
+  OTHER
+}
+
+enum RecordStatus {
+  RECORDED
+  CANCELLED
+}
+
+/// Encaissement reçu du client : référence et justificatif obligatoires (aucune simulation de virement).
+model PaymentRecord {
+  id              String        @id @default(uuid(7)) @db.Uuid
+  invoiceId       String        @db.Uuid
+  amount          Decimal       @db.Decimal(16, 2)
+  currency        String        @db.Char(3)
+  receivedOn      DateTime      @db.Date
+  method          PaymentMethod
+  reference       String
+  proofDocumentId String        @unique @db.Uuid
+  note            String?
+  status          RecordStatus  @default(RECORDED)
+  recordedById    String        @db.Uuid
+  recordedAt      DateTime      @default(now()) @db.Timestamptz(3)
+  cancelledAt     DateTime?     @db.Timestamptz(3)
+  cancelledById   String?       @db.Uuid
+  cancelReason    String?
+
+  invoice       Invoice  @relation(fields: [invoiceId], references: [id])
+  proofDocument Document @relation(fields: [proofDocumentId], references: [id])
+
+  @@index([invoiceId])
+}
+
+/// Règlement versé au freelance : référence et justificatif obligatoires.
+model PayoutRecord {
+  id              String        @id @default(uuid(7)) @db.Uuid
+  invoiceId       String        @db.Uuid
+  contractId      String        @db.Uuid
+  profileId       String        @db.Uuid
+  amount          Decimal       @db.Decimal(16, 2)
+  currency        String        @db.Char(3)
+  paidOn          DateTime      @db.Date
+  method          PaymentMethod
+  reference       String
+  proofDocumentId String        @unique @db.Uuid
+  note            String?
+  status          RecordStatus  @default(RECORDED)
+  recordedById    String        @db.Uuid
+  recordedAt      DateTime      @default(now()) @db.Timestamptz(3)
+  cancelledAt     DateTime?     @db.Timestamptz(3)
+  cancelledById   String?       @db.Uuid
+  cancelReason    String?
+
+  invoice       Invoice           @relation(fields: [invoiceId], references: [id])
+  contract      Contract          @relation(fields: [contractId], references: [id])
+  profile       FreelancerProfile @relation(fields: [profileId], references: [id])
+  proofDocument Document          @relation(fields: [proofDocumentId], references: [id])
+
+  @@index([invoiceId])
+  @@index([profileId])
+}
+
+enum PayoutMethodType {
+  /// Virement manuel hors plateforme (aucune coordonnée bancaire collectée ici).
+  MANUAL_BANK_TRANSFER
+  /// Prestataire de paiement (onboarding hébergé) : non activé en V1.
+  PROVIDER
+}
+
+enum PaymentConfigStatus {
+  NOT_CONFIGURED
+  PENDING_DECISION
+  MANUAL_CONFIRMED
+  PROVIDER_ONBOARDING
+  PROVIDER_ACTIVE
+}
+
+/// Référence de configuration de règlement : ne contient jamais de coordonnées bancaires.
+model PaymentConfiguration {
+  id                 String              @id @default(uuid(7)) @db.Uuid
+  profileId          String              @unique @db.Uuid
+  method             PayoutMethodType    @default(MANUAL_BANK_TRANSFER)
+  status             PaymentConfigStatus @default(NOT_CONFIGURED)
+  provider           String?
+  providerAccountRef String?
+  /// TEST ou LIVE lorsqu'un prestataire est configuré.
+  providerMode       String?
+  note               String?
+  confirmedById      String?             @db.Uuid
+  confirmedAt        DateTime?           @db.Timestamptz(3)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+
+  profile FreelancerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  REJECTED
+}
+
+/// Événements de prestataire de paiement : idempotence par (provider, eventId).
+model PaymentWebhookEvent {
+  id             String             @id @default(uuid(7)) @db.Uuid
+  provider       String
+  eventId        String
+  eventType      String
+  signatureValid Boolean
+  payloadSha256  String
+  status         WebhookEventStatus @default(RECEIVED)
+  error          String?
+  receivedAt     DateTime           @default(now()) @db.Timestamptz(3)
+  processedAt    DateTime?          @db.Timestamptz(3)
+
+  @@unique([provider, eventId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Suivi : évaluations, notifications, audit, paramètres, contact
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ReviewAuthorRole {
+  COMPANY
+  FREELANCER
+  ADMIN
+}
+
+enum ReviewSubject {
+  FREELANCER
+  COMPANY
+}
+
+enum ReviewVisibility {
+  /// Interne à E-MPGT (politique de publication à décider : D-14).
+  INTERNAL
+}
+
+model Review {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  contractId   String           @db.Uuid
+  authorUserId String           @db.Uuid
+  authorRole   ReviewAuthorRole
+  subject      ReviewSubject
+  rating       Int
+  comment      String?
+  visibility   ReviewVisibility @default(INTERNAL)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+
+  contract Contract @relation(fields: [contractId], references: [id])
+
+  @@unique([contractId, authorRole])
+}
+
+enum NotificationEmailStatus {
+  NOT_REQUIRED
+  PENDING
+  SENT
+  FAILED
+}
+
+/// Notification in-app ; l'e-mail associé (sans jeton ni donnée sensible) est envoyé
+/// par un répartiteur après validation de la transaction.
+model Notification {
+  id            String                  @id @default(uuid(7)) @db.Uuid
+  userId        String                  @db.Uuid
+  type          String
+  title         String
+  body          String
+  link          String?
+  readAt        DateTime?               @db.Timestamptz(3)
+  emailStatus   NotificationEmailStatus @default(NOT_REQUIRED)
+  emailAttempts Int                     @default(0)
+  emailedAt     DateTime?               @db.Timestamptz(3)
+  createdAt     DateTime                @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([emailStatus, createdAt])
+}
+
+enum ActorType {
+  USER
+  SYSTEM
+  CLI
+  INTEGRATION
+}
+
+/// Journal d'audit en ajout seul (UPDATE et DELETE interdits par trigger).
+model AuditEvent {
+  id          BigInt    @id @default(autoincrement())
+  occurredAt  DateTime  @default(now()) @db.Timestamptz(3)
+  actorType   ActorType
+  actorUserId String?   @db.Uuid
+  actorRoles  String[]  @default([])
+  action      String
+  entityType  String
+  entityId    String?
+  reason      String?
+  /// Données de contexte filtrées (jamais de mot de passe, jeton ou coordonnée bancaire).
+  metadata    Json?
+  requestId   String?
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+  @@index([occurredAt])
+  @@index([action])
+}
+
+/// Compteurs de références lisibles (MIS-2026-0001…), incrémentés atomiquement.
+model ReferenceCounter {
+  key   String @id
+  value Int    @default(0)
+}
+
+/// Paramètres métier modifiables par E-MPGT (politique de validation V1, etc.).
+model PlatformSetting {
+  key         String   @id
+  value       Json
+  updatedById String?  @db.Uuid
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+}
+
+enum ContactRequestStatus {
+  NEW
+  HANDLED
+}
+
+model ContactRequest {
+  id           String               @id @default(uuid(7)) @db.Uuid
+  name         String
+  email        String
+  organization String?
+  audience     String
+  subject      String
+  message      String
+  status       ContactRequestStatus @default(NEW)
+  handledAt    DateTime?            @db.Timestamptz(3)
+  handledById  String?              @db.Uuid
+  createdAt    DateTime             @default(now()) @db.Timestamptz(3)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Import des profils historiques
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ImportBatchStatus {
+  PREVIEW
+  COMPLETED
+  FAILED
+}
+
+enum ImportItemStatus {
+  PENDING_REVIEW
+  APPROVED
+  IGNORED
+  DUPLICATE
+}
+
+enum ImportItemChange {
+  NEW
+  UNCHANGED
+  CHANGED
+}
+
+model ImportBatch {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  sourceUrl      String
+  collectedAt    DateTime          @db.Timestamptz(3)
+  parserVersion  String
+  snapshotSha256 String
+  status         ImportBatchStatus @default(PREVIEW)
+  stats          Json
+  error          String?
+  createdById    String?           @db.Uuid
+  createdAt      DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @db.Timestamptz(3)
+
+  items     ImportItem[]
+  documents Document[]
+}
+
+model ImportItem {
+  id                   String           @id @default(uuid(7)) @db.Uuid
+  batchId              String           @db.Uuid
+  /// Clé stable dérivée de la source (identifiant de bloc) : sert au rapprochement entre exécutions.
+  externalKey          String
+  /// Empreinte du contenu normalisé : détecte les modifications à la source.
+  fingerprint          String
+  change               ImportItemChange
+  status               ImportItemStatus @default(PENDING_REVIEW)
+  parsed               Json
+  rawText              String
+  warnings             String[]         @default([])
+  duplicateOfProfileId String?          @db.Uuid
+  duplicateScore       Float?
+  profileId            String?          @db.Uuid
+  reviewedById         String?          @db.Uuid
+  reviewedAt           DateTime?        @db.Timestamptz(3)
+  reviewNote           String?
+  createdAt            DateTime         @default(now()) @db.Timestamptz(3)
+
+  batch       ImportBatch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  profile     FreelancerProfile? @relation("ImportItemProfile", fields: [profileId], references: [id], onDelete: SetNull)
+  duplicateOf FreelancerProfile? @relation("ImportItemDuplicateOf", fields: [duplicateOfProfileId], references: [id], onDelete: SetNull)
+
+  @@unique([batchId, externalKey])
+  @@index([externalKey])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Intégration future avec le Knowledge Graph (aucune synchronisation réelle en V1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum IntegrationScope {
+  FREELANCERS
+  SKILLS
+  AVAILABILITY
+  MISSIONS
+  APPLICATIONS
+  CONTRACTS
+  COSTS
+  REVIEWS
+  DOCUMENTS_METADATA
+}
+
+/// Client machine révocable : seul le condensat du jeton est stocké.
+model IntegrationClient {
+  id           String             @id @default(uuid(7)) @db.Uuid
+  name         String
+  description  String?
+  tokenPrefix  String             @unique
+  tokenHash    String
+  scopes       IntegrationScope[]
+  createdById  String             @db.Uuid
+  createdAt    DateTime           @default(now()) @db.Timestamptz(3)
+  lastUsedAt   DateTime?          @db.Timestamptz(3)
+  expiresAt    DateTime?          @db.Timestamptz(3)
+  revokedAt    DateTime?          @db.Timestamptz(3)
+  revokedById  String?            @db.Uuid
+  revokeReason String?
+}
+
+/// Journal des changements alimenté par triggers : permet la synchronisation incrémentale,
+/// y compris des suppressions et retraits de partage.
+model SyncChange {
+  seq        BigInt   @id @default(autoincrement())
+  entityType String
+  entityId   String   @db.Uuid
+  operation  String
+  changedAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([entityType, seq])
+}
